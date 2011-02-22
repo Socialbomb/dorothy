@@ -1,0 +1,194 @@
+#!/usr/bin/python
+# 
+# Dorothy is a Tornado deployer.
+# -------------------------------------------------------------------
+# Usage:
+# 
+# - Start a Tornado application on a set of ports:
+#   $ dorothy 'python /path/to/app.py' -l:PORT1 -l:PORT2 start
+# 
+# - Stop a Tornado application by specifying the port:
+#   $ dorothy -l:PORT1 stop
+# 
+# - Restart an application
+#   $ dorothy 'python /path/to/app.py' -l:PORT2
+
+import subprocess, shlex
+import os, sys, re
+from collections import defaultdict
+
+class Parser (object):
+	regexp = r'^(?P<port>[0-9]{1,5}):(?P<addr>(?:[0-9]{1,3}.){3}[0-9]{1,3})? (?P<pid>[0-9]{1,5})$'
+	
+	def __init__(self, filename):
+		self.filename = filename
+	
+	def read(self):
+		d = defaultdict(dict)
+		
+		with open(self.filename, 'a+') as f:
+			f.seek(0)
+			for line in f:
+				regexp = re.compile(self.regexp)
+				match = regexp.match(line.strip())
+				
+				if match:
+					addr = match.group('addr') or None
+					d[match.group('port')][addr] = match.group('pid')
+		
+		return d
+	
+	def write(self, d):
+		with open(self.filename, 'w+') as f:
+			for port, v in d.iteritems():
+				for addr, pid in v.iteritems():
+					f.write("%s:%s %s\n" % (port, addr or '', pid))
+			
+			f.flush()
+	
+
+class DemonicError (Exception):
+	pass
+
+
+class Demonizer (object):
+	def __init__(self, executable, arguments, addressList, pidfile, user=None):
+		self.executable = executable
+		self.arguments = arguments
+		self.addressList = addressList
+		self.pidfile = pidfile
+		self.euid = None
+		
+		if user:
+			if os.getuid() == 0:
+				try:
+					self.euid = pwd.getpwnam(user).pw_uid
+				except KeyError, e:
+					raise DemonicError('specified user not found')
+			else:
+				raise DemonicError('must run as root to set effective user')
+	
+	def startProcess(self, ip, port):
+		args = shlex.split(self.executable)
+		args.extend(["--port=%s" % port])
+		args.extend(self.arguments)
+		
+		if self.euid: os.seteuid(self.euid)
+		proc = subprocess.Popen(args)
+		if self.euid: os.seteuid(0)
+		
+		return proc
+	
+	def enable(self):
+		parser = Parser(self.pidfile)
+		pids = parser.read()
+		
+		for (ip, port) in self.addressList:
+			if None in pids[port] or ip in pids[port]:
+				raise DemonicError("there is already a process bound to that port")
+			
+			proc = self.startProcess(ip, port)
+			pids[port][ip] = proc.pid
+		
+		parser.write(pids)
+	
+	def disable(self):
+		parser = Parser(self.pidfile)
+		pids = parser.read()
+		
+		for (ip, port) in self.addressList:
+			if ip is None:
+				# When the IP is left unspecified, we kill all processes 
+				# bound to the specified port
+				for non, pid in pids[port].iteritems():
+					subprocess.Popen(["kill", pid])
+				del(pids[port])
+			elif ip in pids[port]:
+				subprocess.Popen(["kill", pids[port][ip]])
+				del(pids[port][ip])
+				
+				if len(pids[port]) == 0:
+					del(pids[port])
+			else:
+				raise DemonicError("there's no process serving at that address")
+		
+		parser.write(pids)
+	
+	def refresh(self):
+		parser = Parser(self.pidfile)
+		pids = parser.read()
+		
+		for (ip, port) in self.addressList:
+			if ip is None:
+				# When the IP is left unspecified, we kill all processes 
+				# bound to the specified port
+				for addr, pid in pids[port].iteritems():
+					subprocess.Popen(["kill", "-HUP", pid])
+				del(pids[port])
+			elif ip in pids[port]:
+				subprocess.Popen(["kill", "-HUP", pids[port][ip]])
+				del(pids[port][ip])
+			else:
+				raise DemonicError("there's no process serving at that address")
+			
+			proc = self.startProcess(ip, port)
+			pids[port][ip] = proc.pid
+		
+		parser.write(pids)
+
+
+if __name__ == "__main__":
+	from optparse import OptionParser
+	import pwd
+	
+	usage = 'usage: %s [COMMAND] [-l address] [-p pidfile] [-u user] [-a argument] [start|stop|refresh]' % sys.argv[0]
+	
+	parser = OptionParser(usage)
+	parser.add_option("-l", "--listen", dest="listenAddrs",
+		help="specify a listen address (In the form xxx.xxx.xxx.xxx:nnn "
+		"where the IP address is optional and the colon and port are"
+		" required. If no IP is specified, the server will listen on the "
+		"loopback interface.)",
+		metavar="ADDR", action="append", default=[])
+	parser.add_option("-p", "--pidfile", dest="pidfile",
+		help="specify a PID file", metavar="FILE",
+		default="/var/spool/twister.pid")
+	parser.add_option("-u", "--user", dest="user",
+		help="set the user for the child processes",
+		metavar="USER", default=None)
+	parser.add_option("-a", "--arg", dest="args",
+		help="command line arguments to be sent to the child processes",
+		metavar="ARGUMENT", action="append", default=[])
+	
+	(options, args) = parser.parse_args()
+	
+	if len(args) == 1:
+		args.insert(0, None)
+	
+	if args[-1] not in ['start', 'stop', 'refresh']:
+		parser.error()
+	
+	addressList = []
+	
+	for address in options.listenAddrs:
+		regexp = re.compile(r'^((?:[0-9]{1,3}.){3}[0-9]{1,3})?:([0-9]{1,5})$')
+		match = regexp.match(address)
+		
+		if match:
+			addressList.append(match.group(1, 2))
+		else:
+			parser.error('"%s" is not a valid address' % address)
+	
+	d = Demonizer(args[0], options.args, addressList, options.pidfile, options.user)
+	
+	dispatch = {
+		'start': d.enable,
+		'stop': d.disable,
+		'refresh': d.refresh
+	}
+	
+	try:
+		dispatch[args[-1]]()
+	except DemonicError, e:
+		parser.error(e.message)
+	
