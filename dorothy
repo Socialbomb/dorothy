@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/opt/local/bin/python
 # 
 # Dorothy is a Tornado deployer.
 # -------------------------------------------------------------------
@@ -13,8 +13,10 @@
 # - Restart an application
 #   $ dorothy 'python /path/to/app.py' -l:PORT2
 
+from __future__ import with_statement
 import subprocess, shlex
 import os, sys, re
+import daemon
 from collections import defaultdict
 
 class Parser (object):
@@ -70,7 +72,7 @@ class Demonizer (object):
 	
 	def startProcess(self, ip, port):
 		args = shlex.split(self.executable)
-		args.extend(["--port=%s" % port])
+		args.extend(["--port=%s" % port, '>', 'faccess.log', '>&', 'ferror.log'])
 		args.extend(self.arguments)
 		
 		if self.euid: os.seteuid(self.euid)
@@ -150,16 +152,19 @@ if __name__ == "__main__":
 		" required. If no IP is specified, the server will listen on the "
 		"loopback interface.)",
 		metavar="ADDR", action="append", default=[])
-	parser.add_option("-p", "--pidfile", dest="pidfile",
-		help="specify a PID file", metavar="FILE",
-		default="/var/spool/twister.pid")
 	parser.add_option("-u", "--user", dest="user",
 		help="set the user for the child processes",
 		metavar="USER", default=None)
+	parser.add_option("-p", "--pidfile", dest="pidfile",
+		help="specify a PID file", metavar="FILE",
+		default="/var/spool/twister.pid")
+	parser.add_option("-f", "--logfile", dest="logfile",
+		help="redirect STDOUT and STDERR to the specified file",
+		metavar="FILE", default="tornado.log")
 	parser.add_option("-a", "--arg", dest="args",
 		help="command line arguments to be sent to the child processes",
 		metavar="ARGUMENT", action="append", default=[])
-	
+
 	(options, args) = parser.parse_args()
 	
 	if len(args) == 1:
@@ -178,6 +183,10 @@ if __name__ == "__main__":
 			addressList.append(match.group(1, 2))
 		else:
 			parser.error('"%s" is not a valid address' % address)
+	
+	logfile = open(options.logfile, 'a+')
+	ctx = daemon.DaemonContext(stdout=logfile, stderr=logfile, working_directory='.')
+	ctx.open()
 	
 	d = Demonizer(args[0], options.args, addressList, options.pidfile, options.user)
 	
