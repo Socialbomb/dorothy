@@ -15,8 +15,9 @@
 
 from __future__ import with_statement
 import subprocess, shlex
-import os, sys, re
-import daemon
+import os, sys, re, time
+#import daemon
+import signal
 from collections import defaultdict
 
 class Parser (object):
@@ -54,13 +55,14 @@ class DemonicError (Exception):
 
 
 class Demonizer (object):
-	def __init__(self, executable, arguments, addressList, pidfile, user=None):
+	def __init__(self, executable, arguments, addressList, pidfile, logfile, user=None):
 		self.executable = executable
 		self.arguments = arguments
 		self.addressList = addressList
 		self.pidfile = pidfile
+		self.logfile = logfile
 		self.euid = None
-		
+
 		if user:
 			if os.getuid() == 0:
 				try:
@@ -72,16 +74,21 @@ class Demonizer (object):
 	
 	def startProcess(self, ip, port):
 		args = shlex.split(self.executable)
-		args.extend(["--port=%s" % port, '>', 'faccess.log', '>&', 'ferror.log'])
+		args.extend(["--port=%s" % port, '>', options.logfile, '>&', options.logfile])
 		args.extend(self.arguments)
 		
+		if self.logfile:
+			log = open(self.logfile, 'a')
+
 		if self.euid: os.seteuid(self.euid)
-		proc = subprocess.Popen(args)
+		proc = subprocess.Popen(args, bufsize=0, executable=None, stdout=log, stderr=subprocess.STDOUT)
 		if self.euid: os.seteuid(0)
+		
+		log.close()
 		
 		return proc
 	
-	def enable(self):
+	def enable(self, signal, frame):
 		parser = Parser(self.pidfile)
 		pids = parser.read()
 		
@@ -94,7 +101,7 @@ class Demonizer (object):
 		
 		parser.write(pids)
 	
-	def disable(self):
+	def disable(self, signal, frame):
 		parser = Parser(self.pidfile)
 		pids = parser.read()
 		
@@ -115,8 +122,9 @@ class Demonizer (object):
 				raise DemonicError("there's no process serving at that address")
 		
 		parser.write(pids)
+		sys.exit(0)
 	
-	def refresh(self):
+	def refresh(self, signal, frame):
 		parser = Parser(self.pidfile)
 		pids = parser.read()
 		
@@ -160,7 +168,7 @@ if __name__ == "__main__":
 		default="/var/spool/twister.pid")
 	parser.add_option("-f", "--logfile", dest="logfile",
 		help="redirect STDOUT and STDERR to the specified file",
-		metavar="FILE", default="tornado.log")
+		metavar="FILE", default="/var/log/tornado.log")
 	parser.add_option("-a", "--arg", dest="args",
 		help="command line arguments to be sent to the child processes",
 		metavar="ARGUMENT", action="append", default=[])
@@ -184,12 +192,16 @@ if __name__ == "__main__":
 		else:
 			parser.error('"%s" is not a valid address' % address)
 	
-	logfile = open(options.logfile, 'a+')
-	ctx = daemon.DaemonContext(stdout=logfile, stderr=logfile, working_directory='.')
-	ctx.open()
+#	logfile = open(options.logfile, 'a+')
+
+#	ctx = daemon.DaemonContext(stdout=logfile, stderr=logfile, working_directory='.')
+#	ctx.open()
 	
-	d = Demonizer(args[0], options.args, addressList, options.pidfile, options.user)
+	d = Demonizer(args[0], options.args, addressList, options.pidfile, options.logfile, options.user)
 	
+	signal.signal(signal.SIGHUP, d.refresh)
+	signal.signal(signal.SIGTERM, d.disable)
+
 	dispatch = {
 		'start': d.enable,
 		'stop': d.disable,
@@ -197,7 +209,9 @@ if __name__ == "__main__":
 	}
 	
 	try:
-		dispatch[args[-1]]()
+		dispatch[args[-1]](None, None)
 	except DemonicError, e:
 		parser.error(e.message)
-	
+
+	while True:
+		time.sleep(120)
