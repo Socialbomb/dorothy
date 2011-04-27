@@ -16,7 +16,7 @@
 from __future__ import with_statement
 import subprocess, shlex
 import os, sys, re, time
-#import daemon
+import threading
 import signal
 from collections import defaultdict
 
@@ -50,6 +50,23 @@ class Parser (object):
 			f.flush()
 	
 
+def popenAndCall(callback, args, **kwargs):
+	"""
+	Runs the given args with subprocess.Popen and calls the specified callback
+	when the process completes. The callback must be a callable object, and
+	popenArgs is a list or tuple of arguments for subprocess.Popen.
+	"""
+	def threadedWait(callback, proc):
+		returncode = proc.wait()
+		callback(proc.pid, returncode)
+		return 
+
+	proc = subprocess.Popen(args, **kwargs)
+	thread = threading.Thread(target=threadedWait, args=(callback,proc))
+	thread.start()
+	return proc
+
+
 class DemonicError (Exception):
 	pass
 
@@ -81,12 +98,15 @@ class Demonizer (object):
 			log = open(self.logfile, 'a')
 
 		if self.euid: os.seteuid(self.euid)
-		proc = subprocess.Popen(args, bufsize=0, executable=None, stdout=log, stderr=subprocess.STDOUT)
+		proc = popenAndCall(self.endProcessCallback, args, bufsize=0, executable=None, stdout=log, stderr=subprocess.STDOUT)
 		if self.euid: os.seteuid(0)
 		
 		log.close()
 		
 		return proc
+	
+	def endProcessCallback(self, pid, returncode):
+		pass
 	
 	def enable(self, signal, frame):
 		parser = Parser(self.pidfile)
