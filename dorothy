@@ -91,8 +91,8 @@ class Demonizer (object):
 	
 	def startProcess(self, ip, port):
 		args = shlex.split(self.executable)
-		args.extend(["--port=%s" % port, '>', options.logfile, '>&', options.logfile])
 		args.extend(self.arguments)
+		args.extend(["--port=%s" % port, '>', options.logfile, '>&', options.logfile])
 		
 		if self.logfile:
 			log = open(self.logfile, 'a')
