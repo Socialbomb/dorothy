@@ -2,14 +2,14 @@
 
 ## Usage:##
  
-_Start a Tornado application on a set of ports:_
+Start a Tornado application on a set of ports:
 
     $ dorothy 'python /path/to/app.py' -l:PORT1 -l:PORT2 start
  
-_Stop a Tornado application by specifying the port:_
+Stop a Tornado application by specifying the port:
 
     $ dorothy -l:PORT1 stop
  
-_Restart an application_
+Restart an application
 
     $ dorothy 'python /path/to/app.py' -l:PORT2
