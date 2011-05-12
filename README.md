@@ -1,7 +1,5 @@
 # Dorothy is a Tornado deployer. #
 
- -------------------------------------------------------------------
-
 ## Usage:##
  
 _Start a Tornado application on a set of ports:_
